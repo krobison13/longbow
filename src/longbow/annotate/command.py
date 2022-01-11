@@ -108,8 +108,15 @@ click_log.basic_config(logger)
     show_default=True,
     help="Force overwrite of the output files if they exist."
 )
+@click.option(
+    "-w",
+    "--cbc-whitelist",
+    required=False,
+    type=click.Path(),
+    help="Cell barcode whitelist.",
+)
 @click.argument("input-bam", default="-" if not sys.stdin.isatty() else None, type=click.File("rb"))
-def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq, force, input_bam):
+def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq, force, cbc_whitelist, input_bam):
     """Annotate reads in a BAM file with segments from the model."""
 
     t_start = time.time()
