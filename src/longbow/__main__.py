@@ -9,6 +9,10 @@ import pkgutil
 import longbow
 from .meta import VERSION
 
+import cProfile
+import pstats
+from pstats import SortKey
+
 
 logger = logging.getLogger("version")
 click_log.basic_config(logger)
@@ -38,4 +42,14 @@ for p in [p for p in pkgutil.iter_modules(longbow.__path__) if p.ispkg]:
 
 
 if __name__ == "__main__":
-    main_entry()  # pylint: disable=E1120
+    #main_entry()  # pylint: disable=E1120
+    cProfile.run("main_entry()", "profile.dat")
+
+    with open("output_time.txt", "w") as f:
+        p = pstats.Stats("profile.dat", stream=f)
+        p.sort_stats("time").print_stats()
+
+    with open("output_calls.txt", "w") as f:
+        p = pstats.Stats("profile.dat", stream=f)
+        p.sort_stats("calls").print_stats()
+

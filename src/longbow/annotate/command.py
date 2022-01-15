@@ -11,6 +11,7 @@ import click_log
 import tqdm
 
 import ssw
+import pyabpoa as pa
 
 import pysam
 import multiprocessing as mp
@@ -19,7 +20,7 @@ import gzip
 from construct import *
 
 import longbow.utils.constants
-from ..utils import bam_utils
+from ..utils import bam_utils, barcode_utils
 from ..utils.bam_utils import SegmentInfo
 from ..utils import model as LongbowModel
 from ..utils.model import LibraryModel
@@ -110,13 +111,13 @@ click_log.basic_config(logger)
 )
 @click.option(
     "-w",
-    "--cbc-whitelist",
+    "--cbc-whitelist-db",
     required=False,
     type=click.Path(),
     help="Cell barcode whitelist.",
 )
 @click.argument("input-bam", default="-" if not sys.stdin.isatty() else None, type=click.File("rb"))
-def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq, force, cbc_whitelist, input_bam):
+def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq, force, cbc_whitelist_db, input_bam):
     """Annotate reads in a BAM file with segments from the model."""
 
     t_start = time.time()
@@ -128,6 +129,12 @@ def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq,
 
     threads = mp.cpu_count() if threads <= 0 or threads > mp.cpu_count() else threads
     logger.info(f"Running with {threads} worker subprocess(es)")
+
+    # Load CBC whitelist database (empty set if no whitelist is specified)
+    cbc_set = barcode_utils.load_barcode_whitelist(re.sub(".db$", "", cbc_whitelist_db))
+    cbc_db = barcode_utils.load_database(cbc_whitelist_db)
+    k = int(math.log(cbc_db.n_features_in_ - 1)/math.log(4))
+    kpdict = barcode_utils.make_kmer_to_pos_dict(barcode_utils.make_kmers(k))
 
     # Get our model:
     if LibraryModel.has_prebuilt_model(model):
@@ -197,7 +204,7 @@ def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq,
         res = manager.dict({"num_reads_annotated": 0, "num_sections": 0})
         output_worker = mp.Process(
             target=_write_thread_fn,
-            args=(results, out_header, output_bam, not sys.stdin.isatty(), res, read_count, m)
+            args=(results, out_header, output_bam, not sys.stdin.isatty(), res, read_count, m, cbc_set, cbc_db, kpdict)
         )
         output_worker.start()
 
@@ -246,7 +253,7 @@ def get_segments(read):
     ]
 
 
-def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar, res, read_count, model):
+def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar, res, read_count, model, cbc_set, cbc_db, kpdict):
     """Thread / process fn to write out all our data."""
 
     with pysam.AlignmentFile(
@@ -275,11 +282,13 @@ def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar,
 
             # Unpack data:
             read, ppath, logp, is_rc = raw_data
+            read = pysam.AlignedSegment.fromstring(read, out_bam_header)
+
+            # Adjust CBC boundaries
+            _adjust_cbc_boundaries(read, ppath, cbc_set, cbc_db, kpdict)
 
             # Condense the output annotations so we can write them out with indices:
             segments = bam_utils.collapse_annotations(ppath)
-
-            read = pysam.AlignedSegment.fromstring(read, out_bam_header)
 
             # Obligatory log message:
             logger.debug(
@@ -298,6 +307,38 @@ def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar,
             res["num_sections"] += len(segments)
 
             pbar.update(1)
+
+
+def _adjust_cbc_boundaries(read, ppath, cbc_set, cbc_db, kpdict):
+    # q = barcode_utils.make_vector(f'A{barcodes[i]}C', kpdict)
+    k = len(next(iter(kpdict)))
+
+    i = -1
+    while i < len(ppath) - 1:
+        i += 1
+        if ppath[i] == "CBC":
+            idx_left = i
+            idx_right = i
+            while idx_right < len(ppath) and ppath[idx_right] == "CBC":
+                idx_right += 1
+
+            i = idx_right + 1
+
+            # print(f'{i} {idx_left} {idx_right} {ppath[idx_left - 3:idx_right + 3]}')
+            # print(read.query[idx_left - 3:idx_right + 3])
+
+            q = read.query[idx_left - 2:idx_right + 2]
+            qvec = barcode_utils.make_vector(q, kpdict)
+            distances, indices = barcode_utils.find(qvec, cbc_db)
+
+            g = [q] + list(cbc_set[indices[0]])
+
+            a = pa.msa_aligner()
+            res=a.msa(g, out_cons=False, out_msa=True, incr_fn='') # perform multiple sequence alignment 
+            res.print_msa()
+
+            print(indices)
+
 
 
 def _worker_segmentation_fn(in_queue, out_queue, worker_num, model, min_length, max_length, min_rq):
