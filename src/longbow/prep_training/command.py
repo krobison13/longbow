@@ -14,6 +14,7 @@ import ssw
 import pyabpoa as pa
 
 import pysam
+from pysam import FastaFile
 import multiprocessing as mp
 
 import gzip
@@ -27,12 +28,19 @@ from ..utils.model import LibraryModel
 
 
 logging.basicConfig(stream=sys.stderr)
-logger = logging.getLogger("annotate")
+logger = logging.getLogger("prep_training")
 click_log.basic_config(logger)
 
 
 @click.command(name=logger.name)
 @click_log.simple_verbosity_option(logger)
+@click.option(
+    "-s",
+    "--sirv-fasta",
+    required=True,
+    type=click.Path(),
+    help="SIRV fasta file",
+)
 @click.option(
     "-p",
     "--pbi",
@@ -50,10 +58,10 @@ click_log.basic_config(logger)
 )
 @click.option(
     "-o",
-    "--output-bam",
+    "--output-file",
     default="-",
     type=click.Path(exists=False),
-    help="annotated bam output  [default: stdout]",
+    help="training element output file  [default: stdout]",
 )
 @click.option(
     "-m",
@@ -109,35 +117,22 @@ click_log.basic_config(logger)
     show_default=True,
     help="Force overwrite of the output files if they exist."
 )
-@click.option(
-    "-w",
-    "--cbc-whitelist-db",
-    required=False,
-    type=click.Path(),
-    help="Cell barcode whitelist.",
-)
 @click.argument("input-bam", default="-" if not sys.stdin.isatty() else None, type=click.File("rb"))
-def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq, force, cbc_whitelist_db, input_bam):
-    """Annotate reads in a BAM file with segments from the model."""
+def main(sirv_fasta, pbi, threads, output_file, model, chunk, min_length, max_length, min_rq, force, input_bam):
+    """Prepare a dataset for use with model training."""
 
     t_start = time.time()
 
     logger.info("Invoked via: longbow %s", " ".join(sys.argv[1:]))
 
     # Check to see if the output files exist:
-    bam_utils.check_for_preexisting_files(output_bam, exist_ok=force)
+    bam_utils.check_for_preexisting_files(output_file, exist_ok=force)
 
     threads = mp.cpu_count() if threads <= 0 or threads > mp.cpu_count() else threads
     logger.info(f"Running with {threads} worker subprocess(es)")
 
-    # Load CBC whitelist database (empty set if no whitelist is specified)
-    # cbc_set = barcode_utils.load_barcode_whitelist(re.sub(".db$", "", cbc_whitelist_db))
-    # cbc_db = barcode_utils.load_database(cbc_whitelist_db)
-    # k = int(math.log(cbc_db.n_features_in_ - 1)/math.log(4))
-    # kpdict = barcode_utils.make_kmer_to_pos_dict(barcode_utils.make_kmers(k))
-    cbc_set = None
-    cbc_db = None
-    kpdict = None
+    # Load the SIRV reference sequences
+    sirvs = FastaFile(sirv_fasta)
 
     # Get our model:
     if LibraryModel.has_prebuilt_model(model):
@@ -186,7 +181,7 @@ def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq,
 
     for i in range(threads):
         p = mp.Process(
-            target=_worker_segmentation_fn, args=(input_data_queue, results, i, m, min_length, max_length, min_rq)
+            target=_worker_segmentation_fn, args=(input_data_queue, results, i, m, min_length, max_length, min_rq, sirvs)
         )
         p.start()
         worker_pool.append(p)
@@ -207,7 +202,7 @@ def main(pbi, threads, output_bam, model, chunk, min_length, max_length, min_rq,
         res = manager.dict({"num_reads_annotated": 0, "num_sections": 0})
         output_worker = mp.Process(
             target=_write_thread_fn,
-            args=(results, out_header, output_bam, not sys.stdin.isatty(), res, read_count, m, cbc_set, cbc_db, kpdict)
+            args=(results, output_file, not sys.stdin.isatty(), res, read_count, m)
         )
         output_worker.start()
 
@@ -256,12 +251,10 @@ def get_segments(read):
     ]
 
 
-def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar, res, read_count, model, cbc_set, cbc_db, kpdict):
+def _write_thread_fn(out_queue, out_file_name, disable_pbar, res, read_count, model):
     """Thread / process fn to write out all our data."""
 
-    with pysam.AlignmentFile(
-        out_bam_file_name, "wb", header=out_bam_header
-    ) as out_bam_file, tqdm.tqdm(
+    with gzip.open(out_file_name, "wt") as out_file, tqdm.tqdm(
         desc="Progress",
         unit=" read",
         colour="green",
@@ -269,9 +262,6 @@ def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar,
         disable=disable_pbar,
         total=read_count
     ) as pbar:
-
-        ssw_aligner = ssw.Aligner()
-
         while True:
             # Wait for some output data:
             raw_data = out_queue.get()
@@ -284,67 +274,37 @@ def _write_thread_fn(out_queue, out_bam_header, out_bam_file_name, disable_pbar,
                 continue
 
             # Unpack data:
-            read, ppath, logp, is_rc = raw_data
-            read = pysam.AlignedSegment.fromstring(read, out_bam_header)
+            rn = raw_data['rn']
+            rq = raw_data['rq']
+            example_sequences = raw_data['ex']
 
-            # Adjust CBC boundaries
-            #_adjust_cbc_boundaries(read, ppath, cbc_set, cbc_db, kpdict)
-
-            # Condense the output annotations so we can write them out with indices:
-            segments = bam_utils.collapse_annotations(ppath)
-
-            # Obligatory log message:
-            logger.debug(
-                "Path for read %s (%2.2f)%s: %s",
-                read.query_name,
-                logp,
-                " (RC)" if is_rc else "",
-                segments,
-            )
-
-            # Write our our read:
-            bam_utils.write_annotated_read(read, segments, is_rc, logp, model, ssw_aligner, out_bam_file)
+            # Write our training file:
+            for name in example_sequences:
+                rs = example_sequences[name]
+                for r in rs:
+                    out_file.write("\t".join([
+                        rn,
+                        name,
+                        str(rq),
+                        str(r.mismatch_count),
+                        str(r.insertion_count),
+                        str(r.deletion_count),
+                        r.reference,
+                        r.query,
+                        r.alignment[0],
+                        r.alignment[1],
+                        r.alignment[2],
+                        "\n"
+                    ]))
 
             # Increment our counters:
-            res["num_reads_annotated"] += 1
-            res["num_sections"] += len(segments)
+            res["num_reads_annotated"] += 1 if len(example_sequences) > 0 else 0
+            res["num_sections"] += len(example_sequences)
 
             pbar.update(1)
 
 
-def _adjust_cbc_boundaries(read, ppath, cbc_set, cbc_db, kpdict):
-    # q = barcode_utils.make_vector(f'A{barcodes[i]}C', kpdict)
-    k = len(next(iter(kpdict)))
-
-    i = -1
-    while i < len(ppath) - 1:
-        i += 1
-        if ppath[i] == "CBC":
-            idx_left = i
-            idx_right = i
-            while idx_right < len(ppath) and ppath[idx_right] == "CBC":
-                idx_right += 1
-
-            i = idx_right + 1
-
-            # print(f'{i} {idx_left} {idx_right} {ppath[idx_left - 3:idx_right + 3]}')
-            # print(read.query[idx_left - 3:idx_right + 3])
-
-            q = read.query[idx_left - 2:idx_right + 2]
-            qvec = barcode_utils.make_vector(q, kpdict)
-            distances, indices = barcode_utils.find(qvec, cbc_db)
-
-            g = [q] + list(cbc_set[indices[0]])
-
-            a = pa.msa_aligner()
-            res=a.msa(g, out_cons=False, out_msa=True, incr_fn='') # perform multiple sequence alignment 
-            res.print_msa()
-
-            print(indices)
-
-
-
-def _worker_segmentation_fn(in_queue, out_queue, worker_num, model, min_length, max_length, min_rq):
+def _worker_segmentation_fn(in_queue, out_queue, worker_num, model, min_length, max_length, min_rq, sirvs):
     """Function to run in each subthread / subprocess.
     Segments each read and place the segments in the output queue."""
 
@@ -388,10 +348,135 @@ def _worker_segmentation_fn(in_queue, out_queue, worker_num, model, min_length, 
         # Process and place our data on the output queue:
         segment_info = _segment_read(read, model)
 
-        out_queue.put(segment_info)
+        example_sequences = _extract_training_sequences(read, model, segment_info, sirvs)
+
+        out_queue.put({
+            'rn': read.query_name,
+            'rq': read.get_tag('rq') if read.has_tag('rq') else -1,
+            'ex': example_sequences
+        })
         num_reads_segmented += 1
 
     logger.debug(f"Worker %d: Num reads segmented: %d", worker_num, num_reads_segmented)
+
+
+def _extract_training_sequences(read, model, segment_info, sirvs):
+    i = -1
+    label = ""
+    ppath = segment_info[1]
+    query_sequence = read.query_sequence if segment_info[2] == False else bam_utils.reverse_complement(read.query_sequence)
+
+    ssw_aligner = ssw.Aligner()
+    example_sequences = {}
+
+    while i < len(ppath) - 1:
+        i += 1
+
+        if ppath[i] != label:
+            label = ppath[i]
+
+            idx_left = i
+            idx_right = i
+            while idx_right < len(ppath) and ppath[idx_right] == label:
+                idx_right += 1
+
+            i = idx_right + 1
+
+            q = query_sequence[idx_left:idx_right]
+            if label in model.adapter_dict:
+                if label not in ['CBC', 'UMI', 'Poly_A', 'VENUS', 'BOREAS', 'MARS']:
+                    if label not in example_sequences:
+                        example_sequences[label] = []
+
+                    q = query_sequence[idx_left:idx_right]
+
+                    refs = {}
+                    if label == 'cDNA':
+                        ref_names, _ = _prioritize_by_jaccard_index(q, sirvs, n=3)
+                        for sirv_name in ref_names:
+                            refs[sirv_name] = sirvs.fetch(sirv_name)
+
+                    else:
+                        refs[label] = model.adapter_dict[label]
+
+                    best_score, best_ref_name, best_ref, best_r = 0, None, None, None
+                    for ref_name in refs:
+                        r = ssw_aligner.align(query=q, reference=refs[ref_name], revcomp=False)
+                        if r.score > best_score:
+                            best_score = r.score
+                            best_ref_name = ref_name
+                            best_ref = refs[ref_name]
+                            best_r = r
+
+                    if best_r.mismatch_count + best_r.deletion_count + best_r.insertion_count < int(0.15*len(q)):
+                        r2, new_idx_left, new_idx_right = _scan_for_best_alignment(best_ref, query_sequence, idx_left, idx_right)
+
+                        # print(f'{label} {refs[label] if label != "cDNA" else ""} {idx_left} {idx_right} {new_idx_left} {new_idx_right} {best_r.reference_coverage} {r2.reference_coverage} {best_r.query_coverage} {r2.query_coverage}')
+                        # print(best_r.alignment_report())
+                        # print(r2.alignment_report())
+                        # print("")
+
+                        if r2.reference_begin == 0 and r2.query_begin == 0 and r2.reference_coverage >= 0.95 and r2.query_coverage >= 0.95:
+                            example_sequences[label].append(r2)
+
+
+    return example_sequences
+
+
+def _scan_for_best_alignment(ref_sequence, query_sequence, idx_left, idx_right):
+    ssw_aligner = ssw.Aligner()
+
+    best_coverage_sum_left, best_idx_left = 0, 0
+    for shift_left in range(-min(200, int(len(ref_sequence)/5)), min(200, int(len(ref_sequence)/5))):
+        q = query_sequence[max(0, idx_left + shift_left):max(idx_left + shift_left + 1, idx_right)]
+        r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
+
+        if r.reference_coverage + r.query_coverage > best_coverage_sum_left:
+            best_coverage_sum_left = r.reference_coverage + r.query_coverage
+            best_idx_left = idx_left + shift_left
+
+    best_coverage_sum_right, best_idx_right = 0, 0
+    best_r = None
+    for shift_right in range(-min(200, int(len(ref_sequence)/5)), min(200, int(len(ref_sequence)/5))):
+        q = query_sequence[best_idx_left:min(max(best_idx_left + 1, idx_right + shift_right), len(query_sequence))]
+        r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
+
+        if r.reference_coverage + r.query_coverage > best_coverage_sum_right:
+            best_coverage_sum_right = r.reference_coverage + r.query_coverage
+            best_idx_right = idx_right + shift_right
+            best_r = r
+
+    return best_r, best_idx_left, best_idx_right
+
+
+def _prioritize_by_jaccard_index(query, ref, k=7, n=3):
+    jaccards = {}
+    seqs = {}
+
+    query_kmers = _kmerize(query, k)
+    for name in ref.references:
+        ref_kmers = _kmerize(ref.fetch(name), k)
+
+        intersection = len(query_kmers.intersection(ref_kmers))
+        union = len(query_kmers.union(ref_kmers))
+
+        ji = intersection / union
+        jaccards[name] = ji
+        seqs[name] = ref.fetch(name)
+
+    jaccards_sorted = {k: v for k, v in sorted(jaccards.items(), key=lambda item: item[1], reverse=True)}
+
+    return list(jaccards_sorted.keys())[0:n], jaccards_sorted
+
+
+def _kmerize(seq, k):
+    kmers = set()
+
+    for i in range(len(seq) - k + 1):
+        kmer = seq[i:i + k]
+        kmers.add(kmer)
+
+    return kmers
 
 
 def _segment_read(read, model):
