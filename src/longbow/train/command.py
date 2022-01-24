@@ -6,6 +6,10 @@ import sys
 import gzip
 import re
 import random
+<<<<<<< HEAD
+=======
+import pprint
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 
 import click
 import click_log
@@ -34,6 +38,7 @@ click_log.basic_config(logger)
 
 @click.command(name="train")
 @click_log.simple_verbosity_option(logger)
+<<<<<<< HEAD
 @click.option(
     "-t",
     "--threads",
@@ -58,6 +63,31 @@ click_log.basic_config(logger)
     show_default=True,
     help="number of training iterations to use",
 )
+=======
+# @click.option(
+#     "-s",
+#     "--sirv-fasta",
+#     required=True,
+#     type=click.Path(),
+#     help="SIRV fasta file",
+# )
+# @click.option(
+#     "-n",
+#     "--num-training-samples",
+#     type=int,
+#     default=10,
+#     show_default=True,
+#     help="number of training samples to use",
+# )
+# @click.option(
+#     "-i",
+#     "--max-training-iterations",
+#     type=int,
+#     default=5,
+#     show_default=True,
+#     help="number of training iterations to use",
+# )
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 @click.option(
     "-s",
     "--training-stop-threshold",
@@ -66,6 +96,7 @@ click_log.basic_config(logger)
     show_default=True,
     help="number of training iterations to use",
 )
+<<<<<<< HEAD
 @click.option(
     "-w",
     "--cbc-whitelist",
@@ -73,6 +104,15 @@ click_log.basic_config(logger)
     type=click.Path(),
     help="Cell barcode whitelist.",
 )
+=======
+# @click.option(
+#     "-o",
+#     "--output-yaml",
+#     required=True,
+#     type=click.Path(exists=False),
+#     help="trained model",
+# )
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 @click.option(
     "-m",
     "--model",
@@ -84,6 +124,7 @@ click_log.basic_config(logger)
          "of a LibraryModel as per LibraryModel.to_json()."
 )
 @click.option(
+<<<<<<< HEAD
     "-b",
     "--rq-bins",
     type=str,
@@ -100,6 +141,17 @@ click_log.basic_config(logger)
 )
 @click.argument("training-file", type=click.Path(exists=True))
 def main(threads, training_num_samples, training_max_iterations, training_stop_threshold, cbc_whitelist, model, rq_bins, output_yaml, training_file):
+=======
+    "-w",
+    "--cbc-whitelist-db",
+    required=False,
+    type=click.Path(),
+    help="Cell barcode whitelist.",
+)
+@click.argument("training-file", type=click.Path(exists=True))
+#def main(sirv_fasta, num_training_samples, max_training_iterations, threads, output_yaml, model, training_bam):
+def main(threads, model, cbc_whitelist_db, training_file):
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
     """Train transition and emission probabilities on real data."""
 
     t_start = time.time()
@@ -110,7 +162,11 @@ def main(threads, training_num_samples, training_max_iterations, training_stop_t
     logger.info(f"Running with {threads} worker subprocess(es)")
 
     # Load CBC whitelist database (empty set if no whitelist is specified)
+<<<<<<< HEAD
     cbc_set = barcode_utils.load_barcode_whitelist(cbc_whitelist)
+=======
+    cbc_set = barcode_utils.load_barcode_whitelist(re.sub(".db$", "", cbc_whitelist_db))
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 
     # Get our model:
     if LibraryModel.has_prebuilt_model(model):
@@ -120,6 +176,7 @@ def main(threads, training_num_samples, training_max_iterations, training_stop_t
         m = LibraryModel.from_json_file(model)
     logger.info(f"Using %s: %s", model, m.description)
 
+<<<<<<< HEAD
     # Set up rq bins
     rq_bins = sorted(list(map(lambda x: float(x), rq_bins.split(','))))
 
@@ -142,14 +199,42 @@ def main(threads, training_num_samples, training_max_iterations, training_stop_t
             verbose=True,
             n_jobs=threads,
         )
+=======
+    # Load training data
+    training_data = load_training_data(training_file)
+    error_rate_tbl = compute_error_rates(training_data)
 
-    with open(output_yaml, "w") as model_file:
-        print(improvement.to_yaml(), file=model_file)
+    # print(error_rate_tbl)
+
+    simulate_reads(m, training_data, error_rate_tbl, cbc_set)
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
+
+    # pp = pprint.PrettyPrinter(indent=4)
+    # pp.pprint(training_data)
+
+    # logger.info("Loaded %d training sequences", len(training_seqs))
+
+    # logger.info("Starting training...", len(training_seqs))
+    # improvement, history = m.fit(
+    #     sequences=training_seqs,
+    #     max_iterations=max_training_iterations,
+    #     stop_threshold=1e-1,
+    #     return_history=True,
+    #     verbose=True,
+    #     n_jobs=threads,
+    # )
+
+    # with open(output_yaml, "w") as model_file:
+    #     print(improvement.to_yaml(), file=model_file)
 
     logger.info(f"Done. Elapsed time: %2.2fs.", time.time() - t_start)
 
 
+<<<<<<< HEAD
 def load_training_data(training_file, rq_bins):
+=======
+def load_training_data(training_file):
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
     training_data = {}
 
     header = [ 'read_name', 'element', 'rq', 'mismatch_count', 'insertion_count', 'deletion_count', 'reference', 'query', 'align_reference', 'align_track', 'align_query' ]
@@ -157,13 +242,18 @@ def load_training_data(training_file, rq_bins):
         for l in tf:
             values = l.rstrip().split('\t')
             res = {header[i]: values[i] for i in range(len(header))}
+<<<<<<< HEAD
             rq = quantize_rq(float(res['rq']), rq_bins)
 
             res['rq'] = rq
+=======
+            res['rq'] = float(res['rq'])
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
             res['mismatch_count'] = int(res['mismatch_count'])
             res['insertion_count'] = int(res['insertion_count'])
             res['deletion_count'] = int(res['deletion_count'])
 
+<<<<<<< HEAD
             if rq not in training_data:
                 training_data[rq] = {}
 
@@ -171,11 +261,21 @@ def load_training_data(training_file, rq_bins):
                 training_data[rq][res['element']] = []
 
             training_data[rq][res['element']].append(res)
+=======
+            if res['element'] not in training_data:
+                training_data[res['element']] = []
+
+            training_data[res['element']].append(res)
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 
     return training_data
 
 
+<<<<<<< HEAD
 def quantize_rq(rq, rq_bins):
+=======
+def quantize_rq(rq, rq_bins = [-1.0, 0.0]):
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
     for i in range(len(rq_bins)):
         bin_left = rq_bins[i]
         bin_right = rq_bins[i+1] if i+1 < len(rq_bins) else 1.0
@@ -186,6 +286,7 @@ def quantize_rq(rq, rq_bins):
     return -1.0
 
 
+<<<<<<< HEAD
 def compute_error_rates(training_data):
     tbl_header = ["rq", "mrate", "irate", "drate", "ins_len", "del_len"]
     tbl_rows = []
@@ -206,6 +307,32 @@ def compute_error_rates(training_data):
                     del_len = np.mean(list(map(lambda x: len(x), re.findall("-+", t['align_query']))))
 
                 tbl_rows.append([rq, mrate, irate, drate, ins_len, del_len])
+=======
+def compute_error_rates(training_data, rq_bins = [-1.0, 0.0]):
+    tbl_header = ["rq", "mrate", "irate", "drate", "ins_len", "del_len"]
+    tbl_rows = []
+
+    for i in range(len(rq_bins)):
+        bin_left = rq_bins[i]
+        bin_right = rq_bins[i+1] if i+1 < len(rq_bins) else 1.0
+
+        for e in training_data:
+            for t in training_data[e]:
+                if bin_left <= t['rq'] and t['rq'] < bin_right:
+                    mrate = ( t['mismatch_count'] / len(t['reference']) ) + 0.0001
+                    irate = ( t['insertion_count'] / len(t['reference']) ) + 0.0001
+                    drate = ( t['deletion_count'] / len(t['reference']) ) + 0.0001
+                    ins_len = None
+                    del_len = None
+
+                    if t['insertion_count'] > 0:
+                        ins_len = np.mean(list(map(lambda x: len(x), re.findall("-+", t['align_reference']))))
+
+                    if t['deletion_count'] > 0:
+                        del_len = np.mean(list(map(lambda x: len(x), re.findall("-+", t['align_query']))))
+
+                    tbl_rows.append([bin_left, mrate, irate, drate, ins_len, del_len])
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
 
     tbl_new = pd.DataFrame(tbl_rows, columns=tbl_header)
 
@@ -220,6 +347,7 @@ def simulate_reads(m, training_data, error_rate_tbl, cbc_set):
         num_training_samples[rq] = None
         training_data_iters[rq] = {}
 
+<<<<<<< HEAD
     for rq in training_data:
         for k in training_data[rq]:
             num_training_samples[rq] = min(list(filter(lambda x: x is not None, [len(training_data[rq][k]), num_training_samples[rq]])))
@@ -345,3 +473,101 @@ def add_noise(seq, error_rate_tbl_rq):
                         newseq[i] = ''
 
     return ''.join(newseq)
+=======
+    for k in training_data:
+        for i in range(len(training_data[k])):
+            rq = quantize_rq(training_data[k][i]['rq'])
+
+            num_training_samples[rq] = min(list(filter(lambda x: x is not None, [len(training_data[k]), num_training_samples[rq]])))
+            training_data_iters[rq][k] = iter(training_data[k])
+
+    for rq in num_training_samples:
+        n = num_training_samples[rq]
+
+        for i in range(n):
+            read = []
+
+            idx1 = random.choice(list(range(len(m.array_element_structure))))
+            idx2 = random.choice(list(range(len(m.array_element_structure))))
+            while idx2 == idx1:
+                idx2 = random.choice(list(range(len(m.array_element_structure))))
+
+            for array_structures in m.array_element_structure[min(idx1, idx2):max(idx1, idx2)]:
+                for k in array_structures:
+                    seg = ''
+                    if k not in training_data:
+                        ref = m.adapter_dict[k]
+                        if not isinstance(ref, dict):
+                            seg = add_noise(ref, error_rate_tbl.loc[[rq]])
+                        else:
+                            if k == 'Poly_A':
+                                rf1 = 'A'*int(random.uniform(27, 33))
+                            elif k == 'UMI':
+                                rf1 = simulate_random_sequence(ref['FixedLengthRandomBases'])
+                            elif k == 'CBC':
+                                rf1 = random.choice(cbc_set)
+
+                            seg = add_noise(rf1, error_rate_tbl.loc[[rq]])
+                    else:
+                        seg = next(training_data_iters[rq][k])["query"]
+
+                    read.append(seg)
+
+            print(read)
+
+
+
+def simulate_random_sequence(length):
+    alphabet = ['A', 'C', 'G', 'T']
+    
+    bases = random.choices(alphabet, k=length)
+    bases = ''.join(bases)
+    
+    return bases
+
+
+def add_noise(seq, error_rate_tbl_rq):
+    mismatch_rate = error_rate_tbl_rq['mrate'][0]
+    insertion_rate = error_rate_tbl_rq['irate'][0]
+    deletion_rate = error_rate_tbl_rq['drate'][0]
+    ins_len = error_rate_tbl_rq['ins_len'][0]
+    del_len = error_rate_tbl_rq['del_len'][0]
+
+    mm_positions = int(mismatch_rate*len(seq))
+    ins_positions = int(insertion_rate*len(seq))
+    del_positions = int(deletion_rate*len(seq))
+    
+    newseq = list(seq)
+    
+    for i in range(mm_positions):
+        p = int(random.uniform(0, len(seq)))
+        newseq[p] = bam_utils.reverse_complement(newseq[p])
+
+    for i in range(ins_positions):
+        p = int(random.uniform(0, len(seq)))
+        #l = int(random.uniform(2, 5))
+        l = int(max(1.0, random.normal(loc=ins_len, scale=ins_len, size=1)))
+        newseq[p] = l*newseq[p]
+        
+    for i in range(del_positions):
+        p = int(random.uniform(0, len(seq)))
+        newseq[p] = ''
+
+    return ''.join(newseq)
+    
+
+def select_read(read, model):
+    flogp = -math.inf
+    fseq = None
+
+    # Use the untrained model to determine if we should add this training
+    # example in the forward or reverse-complement orientation.
+    for seq in [read.query_sequence, bam_utils.reverse_complement(read.query_sequence)]:
+        logp, ppath = model.annotate(seq, smooth_islands=True)
+
+        if logp > flogp:
+            flogp = logp
+            fseq = seq
+
+    return flogp, fseq
+>>>>>>> f39336ecab86f4f5d43732b0be7d07b2c2ee2f6b
