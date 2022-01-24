@@ -133,7 +133,9 @@ class LibraryModel:
         logp, path = self.hmm.viterbi(seq)
 
         ppath = []
+        fpath = []
         for p, (idx, state) in enumerate(path[1:-1]):
+            # fpath.append(state.name)
             if (
                     not state.name.endswith(START_STATE_INDICATOR)
                     and not state.name.endswith(END_STATE_INDICATOR)
@@ -142,6 +144,7 @@ class LibraryModel:
             ):
                 ppath.append(f"{re.split(':', state.name)[0]}")
 
+        # return logp, ppath, fpath
         return logp, ppath
 
     def validate_segment_order(self, ordered_segment_names, allow_missing_first_adapter=True):
@@ -237,14 +240,15 @@ class LibraryModel:
         self._initialize_hmm_transitions_new()
 
         # DEBUGGING:
-        self.dump_as_dotfile(do_subgraphs=False)
-        self.dump_as_dotfile_simple()
-        self.to_json(f"longbow_model_{self.name}.v{self.version}.json")
+        if logger.debug:
+            self.dump_as_dotfile(do_subgraphs=False)
+            self.dump_as_dotfile_simple()
+            self.to_json(f"longbow_model_{self.name}.v{self.version}.json")
 
-        with open(f"longbow_model_{self.name}.v{self.version}.dense_transition_matrix.pickle", 'wb') as f:
-            pickle.dump(self.hmm.dense_transition_matrix(), f)
-        with open(f"longbow_model_{self.name}.v{self.version}.emission_distributions.txt", 'w') as f:
-            print(self.hmm, file=f, flush=True)
+            with open(f"longbow_model_{self.name}.v{self.version}.dense_transition_matrix.pickle", 'wb') as f:
+                pickle.dump(self.hmm.dense_transition_matrix(), f)
+            with open(f"longbow_model_{self.name}.v{self.version}.emission_distributions.txt", 'w') as f:
+                print(self.hmm, file=f, flush=True)
 
         # Finalze our HMM:
         self.hmm.bake(merge=BAKE_MERGE_STRATEGY)

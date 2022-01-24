@@ -11,7 +11,6 @@ import click_log
 import tqdm
 
 import ssw
-import pyabpoa as pa
 
 import pysam
 from pysam import FastaFile
@@ -56,6 +55,14 @@ click_log.basic_config(logger)
     show_default=True,
     help="number of threads to use (0 for all)",
 )
+# @click.option(
+#     "-n",
+#     "--training-num-samples",
+#     type=int,
+#     default=10,
+#     show_default=True,
+#     help="number of training samples to use",
+# )
 @click.option(
     "-o",
     "--output-file",
@@ -132,7 +139,7 @@ def main(sirv_fasta, pbi, threads, output_file, model, chunk, min_length, max_le
     logger.info(f"Running with {threads} worker subprocess(es)")
 
     # Load the SIRV reference sequences
-    sirvs = FastaFile(sirv_fasta)
+    sirvs = load_fasta(sirv_fasta)
 
     # Get our model:
     if LibraryModel.has_prebuilt_model(model):
@@ -165,10 +172,10 @@ def main(sirv_fasta, pbi, threads, output_file, model, chunk, min_length, max_le
             read_count = read_counts_per_chunk[chunk - 1] if chunk < len(offsets) else 0
             read_num = read_nums[chunk - 1] if chunk < len(offsets) else 0
 
-            logger.info("Annotating %d reads from chunk %d/%d (reads %d-%d)", read_count, chunk, num_chunks, read_num, read_num + read_count - 1)
+            logger.info("Extracting training elements in %d reads from chunk %d/%d (reads %d-%d)", read_count, chunk, num_chunks, read_num, read_num + read_count - 1)
         else:
             read_count = bam_utils.load_read_count(pbi)
-            logger.info("Annotating %d reads", read_count)
+            logger.info("Extracting training elements in %d reads", read_count)
 
     # Create queues for data:
     queue_size = threads * 2 if threads < 10 else 20
@@ -241,6 +248,11 @@ def main(sirv_fasta, pbi, threads, output_file, model, chunk, min_length, max_le
     et = time.time()
     logger.info(f"Done. Elapsed time: {et - t_start:2.2f}s. "
                 f"Overall processing rate: {res['num_reads_annotated']/(et - t_start):2.2f} reads/s.")
+
+
+def load_fasta(fasta):
+    fa = FastaFile(fasta)
+    return {key: value for (key, value) in list(map(lambda x: (x, fa.fetch(x)), fa.references))}
 
 
 def get_segments(read):
@@ -333,16 +345,16 @@ def _worker_segmentation_fn(in_queue, out_queue, worker_num, model, min_length, 
         # Check for min/max length and min quality:
 
         if len(read.query_sequence) < min_length:
-            logger.warning(f"Read is shorter than min length.  "
-                           f"Skipping: {read.query_name} ({len(read.query_sequence)} < {min_length})")
+            logger.debug(f"Read is shorter than min length.  "
+                         f"Skipping: {read.query_name} ({len(read.query_sequence)} < {min_length})")
             continue
         elif len(read.query_sequence) > max_length:
-            logger.warning(f"Read is longer than max length.  "
-                           f"Skipping: {read.query_name} ({len(read.query_sequence)} > {max_length})")
+            logger.debug(f"Read is longer than max length.  "
+                         f"Skipping: {read.query_name} ({len(read.query_sequence)} > {max_length})")
             continue
         elif read.get_tag("rq") < min_rq:
-            logger.warning(f"Read quality is below the minimum.  "
-                           f"Skipping: {read.query_name} ({read.get_tag('rq')} < {min_rq})")
+            logger.debug(f"Read quality is below the minimum.  "
+                         f"Skipping: {read.query_name} ({read.get_tag('rq')} < {min_rq})")
             continue
 
         # Process and place our data on the output queue:
@@ -394,7 +406,7 @@ def _extract_training_sequences(read, model, segment_info, sirvs):
                     if label == 'cDNA':
                         ref_names, _ = _prioritize_by_jaccard_index(q, sirvs, n=3)
                         for sirv_name in ref_names:
-                            refs[sirv_name] = sirvs.fetch(sirv_name)
+                            refs[sirv_name] = sirvs[sirv_name]
 
                     else:
                         refs[label] = model.adapter_dict[label]
@@ -428,23 +440,25 @@ def _scan_for_best_alignment(ref_sequence, query_sequence, idx_left, idx_right):
 
     best_coverage_sum_left, best_idx_left = 0, 0
     for shift_left in range(-min(200, int(len(ref_sequence)/5)), min(200, int(len(ref_sequence)/5))):
-        q = query_sequence[max(0, idx_left + shift_left):max(idx_left + shift_left + 1, idx_right)]
-        r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
+        if idx_left + shift_left >= 0 and idx_left + shift_left + 1 < len(query_sequence):
+            q = query_sequence[max(0, idx_left + shift_left):max(idx_left + shift_left + 1, idx_right)]
+            r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
 
-        if r.reference_coverage + r.query_coverage > best_coverage_sum_left:
-            best_coverage_sum_left = r.reference_coverage + r.query_coverage
-            best_idx_left = idx_left + shift_left
+            if r.reference_coverage + r.query_coverage > best_coverage_sum_left:
+                best_coverage_sum_left = r.reference_coverage + r.query_coverage
+                best_idx_left = idx_left + shift_left
 
     best_coverage_sum_right, best_idx_right = 0, 0
     best_r = None
     for shift_right in range(-min(200, int(len(ref_sequence)/5)), min(200, int(len(ref_sequence)/5))):
-        q = query_sequence[best_idx_left:min(max(best_idx_left + 1, idx_right + shift_right), len(query_sequence))]
-        r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
+        if idx_right + shift_right < len(query_sequence):
+            q = query_sequence[best_idx_left:min(max(best_idx_left + 1, idx_right + shift_right), len(query_sequence))]
+            r = ssw_aligner.align(query=q, reference=ref_sequence, revcomp=False)
 
-        if r.reference_coverage + r.query_coverage > best_coverage_sum_right:
-            best_coverage_sum_right = r.reference_coverage + r.query_coverage
-            best_idx_right = idx_right + shift_right
-            best_r = r
+            if r.reference_coverage + r.query_coverage > best_coverage_sum_right:
+                best_coverage_sum_right = r.reference_coverage + r.query_coverage
+                best_idx_right = idx_right + shift_right
+                best_r = r
 
     return best_r, best_idx_left, best_idx_right
 
@@ -454,15 +468,15 @@ def _prioritize_by_jaccard_index(query, ref, k=7, n=3):
     seqs = {}
 
     query_kmers = _kmerize(query, k)
-    for name in ref.references:
-        ref_kmers = _kmerize(ref.fetch(name), k)
+    for name in ref:
+        ref_kmers = _kmerize(ref[name], k)
 
         intersection = len(query_kmers.intersection(ref_kmers))
         union = len(query_kmers.union(ref_kmers))
 
         ji = intersection / union
         jaccards[name] = ji
-        seqs[name] = ref.fetch(name)
+        seqs[name] = ref[name]
 
     jaccards_sorted = {k: v for k, v in sorted(jaccards.items(), key=lambda item: item[1], reverse=True)}
 
