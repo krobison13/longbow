@@ -12,6 +12,9 @@ import click_log
 import tqdm
 
 import ssw
+from leven import levenshtein
+import numpy as np
+from sklearn.cluster import dbscan
 
 import pysam
 import multiprocessing as mp
@@ -30,6 +33,7 @@ logging.basicConfig(stream=sys.stderr)
 logger = logging.getLogger("refine")
 click_log.basic_config(logger)
 
+data = ["ACCTCCTAGAAG", "ACCTACTAGAAGTT", "GAATATTAGGCCGA"]
 
 @click.command(name=logger.name)
 @click_log.simple_verbosity_option(logger)
@@ -101,6 +105,11 @@ def main(threads, output_bam, model, force, barcode_tag, allow_list, same_barcod
 
     threads = mp.cpu_count() if threads <= 0 or threads > mp.cpu_count() else threads
     logger.info(f"Running with {threads} worker subprocess(es)")
+
+    # data = ["ACCTCCTAGAAG", "ACCTACTAGAAGTT", "GAATATTAGGCCGA"]
+
+    X = np.arange(len(data)).reshape(-1, 1)
+    db = dbscan(X, metric=lev_metric, eps=5, min_samples=2, algorithm='brute')
 
     # Load barcode allow list
     barcodes = barcode_utils.load_barcode_allowlist(allow_list)
@@ -328,3 +337,7 @@ def _refine_barcode_fn(in_queue, out_queue, barcode_tag, barcodes, same_barcode_
 
         # Process and place our data on the output queue:
         out_queue.put((read.to_string(), refined_segments, num_segments))
+
+def lev_metric(x, y):
+    i, j = int(x[0]), int(y[0])     # extract indices
+    return levenshtein(data[i], data[j])

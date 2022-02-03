@@ -6,22 +6,18 @@ ARG branch
 
 # install gsutil
 RUN apt-get update
-RUN apt-get install -y curl git-lfs time datamash wget zlib1g-dev libssl-dev lbzip2 make gcc
+RUN apt-get install -y curl git-lfs time datamash wget zlib1g-dev libssl-dev lbzip2 make gcc unzip
 RUN curl https://sdk.cloud.google.com | bash
 
 # Setup crcmodc for gsutil:
-RUN apt-get install -y gcc python3-dev python3-setuptools && \
-			pip3 uninstall -y crcmod && \
-			pip3 install --no-cache-dir -U crcmod
+RUN apt-get install -y gcc python3-dev python3-setuptools \
+    && pip3 uninstall -y crcmod \
+    && pip3 install --no-cache-dir -U crcmod
 
 # Fix python malloc bug
 # Detailed here: https://github.com/tensorflow/tensorflow/issues/6968 
 RUN apt-get install -y libtcmalloc-minimal4
 RUN echo 'export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4"' >> ~/.bashrc
-
-# Create known hosts for github ssh info:
-RUN mkdir -p ~/.ssh && touch ~/.ssh/known_hosts
-RUN ssh-keyscan github.com >> ~/.ssh/known_hosts
 
 # Install Longbow
 RUN git clone https://github.com/broadinstitute/longbow.git
@@ -40,6 +36,13 @@ RUN wget https://github.com/samtools/samtools/releases/download/1.14/samtools-1.
     && ./configure --without-curses --disable-lzma --disable-bz2 \
     && make \
     && make install
+
+# install Starcode
+RUN wget -O starcode-zip.zip https://github.com/gui11aume/starcode/archive/master.zip \
+    && unzip starcode-zip.zip \
+    && cd starcode-master \
+    && make \
+    && cp starcode /usr/local/bin/
 
 # activate conda environment
 ENV PATH="/longbow/venv/bin:/root/google-cloud-sdk/bin/:$PATH"
