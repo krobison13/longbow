@@ -14,7 +14,7 @@ import tqdm
 import ssw
 from leven import levenshtein
 import numpy as np
-from sklearn.cluster import dbscan
+from sklearn.cluster import AffinityPropagation
 
 import pysam
 import multiprocessing as mp
@@ -32,8 +32,6 @@ from ..utils.model import LibraryModel
 logging.basicConfig(stream=sys.stderr)
 logger = logging.getLogger("refine")
 click_log.basic_config(logger)
-
-data = ["ACCTCCTAGAAG", "ACCTACTAGAAGTT", "GAATATTAGGCCGA"]
 
 @click.command(name=logger.name)
 @click_log.simple_verbosity_option(logger)
@@ -106,13 +104,28 @@ def main(threads, output_bam, model, force, barcode_tag, allow_list, same_barcod
     threads = mp.cpu_count() if threads <= 0 or threads > mp.cpu_count() else threads
     logger.info(f"Running with {threads} worker subprocess(es)")
 
-    # data = ["ACCTCCTAGAAG", "ACCTACTAGAAGTT", "GAATATTAGGCCGA"]
-
-    X = np.arange(len(data)).reshape(-1, 1)
-    db = dbscan(X, metric=lev_metric, eps=5, min_samples=2, algorithm='brute')
-
     # Load barcode allow list
+    # t_barcode_start = time.time()
     barcodes = barcode_utils.load_barcode_allowlist(allow_list)
+    # barcodes = np.asarray(barcodes)
+    # t_barcode_end = time.time()
+    # logger.info(f"Load barcodes: {t_barcode_end - t_barcode_start:2.2f}s.")
+
+    # t_sim_start = time.time()
+    # lev_similarity = -1*np.array([[levenshtein(w1, w2) for w1 in barcodes] for w2 in barcodes])
+    # t_sim_end = time.time()
+    # logger.info(f"Lev sim: {t_sim_end - t_sim_start:2.2f}s.")
+
+    # t_aff_start = time.time()
+    # affprop = AffinityPropagation(affinity="precomputed", damping=0.5)
+    # affprop.fit(lev_similarity)
+    # t_aff_end = time.time()
+    # logger.info(f"Aff sim: {t_aff_end - t_aff_start:2.2f}s.")
+    # for cluster_id in np.unique(affprop.labels_):
+    #     exemplar = barcodes[affprop.cluster_centers_indices_[cluster_id]]
+    #     cluster = np.unique(barcodes[np.nonzero(affprop.labels_==cluster_id)])
+    #     cluster_str = ", ".join(cluster)
+    #     print(" - *%s:* %s" % (exemplar, cluster_str))
 
     # Configure process manager:
     # NOTE: We're using processes to overcome the Global Interpreter Lock.
@@ -338,6 +351,6 @@ def _refine_barcode_fn(in_queue, out_queue, barcode_tag, barcodes, same_barcode_
         # Process and place our data on the output queue:
         out_queue.put((read.to_string(), refined_segments, num_segments))
 
-def lev_metric(x, y):
-    i, j = int(x[0]), int(y[0])     # extract indices
-    return levenshtein(data[i], data[j])
+# def lev_metric(x, y):
+#     i, j = int(x[0]), int(y[0])     # extract indices
+#     return levenshtein(data[i], data[j])
