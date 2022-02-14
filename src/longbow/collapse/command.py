@@ -30,7 +30,7 @@ from ..utils.model import LibraryModel
 
 
 logging.basicConfig(stream=sys.stderr)
-logger = logging.getLogger("correct-tag")
+logger = logging.getLogger("collapse")
 click_log.basic_config(logger)
 
 
@@ -69,31 +69,9 @@ click_log.basic_config(logger)
     show_default=True,
     help="Force overwrite of the output files if they exist."
 )
-@click.option(
-    "-b",
-    "--barcode-tag",
-    type=str,
-    default=longbow.utils.constants.READ_BARCODE_TAG,
-    show_default=True,
-    help="The tag from which to read the uncorrected barcode."
-)
-@click.option(
-    "-c",
-    "--corrected-tag",
-    type=str,
-    default=longbow.utils.constants.READ_BARCODE_CORRECTED_TAG,
-    show_default=True,
-    help="The tag in which to store the corrected barcode."
-)
-@click.option(
-    "-a",
-    "--allow-list",
-    type=click.Path(exists=True),
-    help="list of allowed barcodes for specified tag (.txt, .txt.gz)",
-)
 @click.argument("input-bam", default="-" if not sys.stdin.isatty() else None, type=click.File("rb"))
-def main(threads, output_bam, model, force, barcode_tag, corrected_tag, allow_list, input_bam):
-    """Correct entries in specified tag to values from a user-supplied barcode allowlist."""
+def main(threads, output_bam, model, force, input_bam):
+    """Cluster UMIs and sequences."""
 
     t_start = time.time()
 
@@ -106,7 +84,7 @@ def main(threads, output_bam, model, force, barcode_tag, corrected_tag, allow_li
     logger.info(f"Running with {threads} worker subprocess(es)")
 
     # Load barcode allow list
-    bc_corrected = _correct_barcodes_to_allowlist(io.open(input_bam.name, "rb"), allow_list, barcode_tag, threads=threads)
+    bc_corrected = _cluster_umis_and_sequences(io.open(input_bam.name, "rb"), threads=threads)
 
     # Configure process manager:
     # NOTE: We're using processes to overcome the Global Interpreter Lock.
@@ -263,9 +241,24 @@ def _correct_barcode_fn(in_queue, out_queue, barcode_tag, corrected_tag, bc_corr
         out_queue.put((read.to_string(), num_segments, num_corrected_segments))
 
 
-def _extract_barcodes(input_bam, barcode_tag):
-    barcodes = set()
+def _cluster_umis_and_sequences(input_bam, pseudocount=1000, threads=1):
+    """Extracts UMIs and sequences from input reads and clusters them."""
 
+    # We perform two rounds of clustering on UMI and sequence pairs. This
+    # approach follows the algorithm from Guillaume Filion in Starcode.
+    # See https://github.com/gui11aume/starcode/blob/master/starcode-umi
+    # for furhter details.
+
+    max_len = 1000 # Starcode only clusters sequences up to 1000 bp in length.
+    data = [None,]
+
+    uarg = ["starcode", "--seq-id", "-qd2", f"-t{threads}"]
+    uproc = subprocess.Popen(uarg, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+
+    sarg = ["starcode", "--seq-id", "-qd2", f"-t{threads}"]
+    sproc = subprocess.Popen(sarg, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+
+    logger.info("Clustering UMIs...")
     pysam.set_verbosity(0)  # silence message about the .bai file not being found
     with pysam.AlignmentFile(
         input_bam, "rb", check_sq=False, require_index=False
@@ -279,48 +272,78 @@ def _extract_barcodes(input_bam, barcode_tag):
     ) as pbar:
 
         for read in bam_file:
-            if read.has_tag(barcode_tag):
-                bc = read.get_tag(barcode_tag)
-                barcodes.add(bc)
+            if read.has_tag(longbow.utils.constants.READ_UMI_TAG):
+                bc = read.get_tag(longbow.utils.constants.READ_UMI_TAG)
+                uproc.stdin.write(bytearray(bc+"\n", 'ascii'))
+                sproc.stdin.write(bytearray(read.query_sequence[:max_len]+"\n", 'ascii'))
 
-    return barcodes
+                data.append((0, read.query_sequence[max_len:]))
 
+            pbar.update(1)
 
-def _correct_barcodes_to_allowlist(input_bam, allow_list, barcode_tag, pseudocount=1000, threads=1):
-    """Extracts barcode from an input read and corrects them."""
+    uo = uproc.communicate()
+    so = sproc.communicate()
 
-    logger.info("Loading barcode allowlist...")
-    bc_allow = barcode_utils.load_barcode_allowlist(allow_list)
+    # Read UMI clusters
+    for line in uo[0].split(b"\n"):
+        if line != b'':
+            # Parse output.
+            centroid, count, ids = line.decode('ascii').rstrip().split("\t")
 
-    logger.info("Loading barcodes from BAM file...")
-    bc_extract = _extract_barcodes(input_bam, barcode_tag)
+            # Store UMI cluster ID (same as seq_id of the canonicals).
+            for id in ids.split(","):
+                data[int(id)] += (centroid,)
 
-    logger.info("Clustering barcodes...")
-    bc_corrected = {}
-    tmp = tempfile.NamedTemporaryFile(delete=True)
-    try:
-        for bc in bc_allow:
-            tmp.write(f'{bc}\t{pseudocount}\n'.encode())
-        for bc in bc_extract:
-            tmp.write(f'{bc}\t1\n'.encode())
+    # Read sequence clusters
+    cluster_id = 0
+    for line in so[0].split(b"\n"):
+        if line != b'':
+            cluster_id += 1
 
-        tmp.flush()
+            # Parse output.
+            centroid, count, ids = line.decode('ascii').rstrip().split("\t")
 
-        scarg = ["starcode", "-q", "--print-clusters", "-d2", f"-t{threads}", tmp.name]
-        sc = subprocess.run(scarg, capture_output=True)
+            # Aux vars to recover canonical end.
+            canon_end = ""
+            seqbuf = {}
+            maxcnt = 0
 
-        for line in sc.stdout.split(b'\n'):
-            if line != b'':
-                centroid, count, members = line.split(b'\t')
-                centroid = centroid.decode("utf-8")
-                count = int(count)
-                members = list(map(lambda x: x.decode("utf-8"), members.split(b",")))
+            # Aux vars for final clusters.
+            clusters = {}
+            for id in ids.split(","):
+                # Merge seq id and umi canonical to form final clusters.
+                umi = data[int(id)][2]
+                if umi not in clusters:
+                    clusters[umi] = (id,)
+                else:
+                    clusters[umi] += (id,)
+                    
+                seq_end = data[int(id)][1]
+                if seq_end not in seqbuf:
+                    seqbuf[seq_end] = 1
+                else:
+                    seqbuf[seq_end] += 1
 
-                if count > pseudocount:
-                    for member in members:
-                        bc_corrected[member] = centroid
-    finally:
-        tmp.close() 
+                if seqbuf[seq_end] > maxcnt:
+                    maxcnt = seqbuf[seq_end]
+                    canon_end = seq_end
 
-    return bc_corrected
+            # Print clusters
+            canonical_sequence = centroid + canon_end
+            for umi in clusters:
+                # Append canonical sequence to UMI cluster.
+                clust_out = umi + canonical_sequence
+
+                # Append sequence count.
+                clust_out += "\t"+str(len(clusters[umi]))
+
+                # Append sequence ids.
+                clust_out += "\t"+",".join(clusters[umi])
+
+                # Write to stdout.
+                sys.stdout.write(clust_out.rstrip()+'\n')
+
+    print("")
+
+    return None
 
