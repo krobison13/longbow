@@ -497,7 +497,8 @@ def draw_state_sequence(seq, path, logp, read, out, show_seg_score, library_mode
 
         # I truly have no idea why I need the 0.72 scaling factor, but if I don't have this, PDF images
         # are super broken.
-        scaling_factor = 1.00 if out.endswith(".png") else 0.72
+        # scaling_factor = 1.00 if out.endswith(".png") else 0.72
+        scaling_factor = 1.00 if out.endswith(".png") else 0.36
         t = transforms.offset_copy(
             text.get_transform(), x=scaling_factor * ex.width, units="dots"
         )

@@ -16,6 +16,7 @@ BARCODE_CONF_FILE_NAME = "barcode_confidence_scores.txt"
 RANDOM_SEGMENT_NAME = "random"
 FIXED_LENGTH_RANDOM_SEGMENT_TYPE_NAME = "FixedLengthRandomBases"
 HPR_SEGMENT_TYPE_NAME = "HomopolymerRepeat"
+KNOWN_SEQS = "KnownSeqs"
 
 RANDOM_SILENT_STATE_A = "RDA"
 RANDOM_SILENT_STATE_B = "RDB"

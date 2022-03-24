@@ -87,13 +87,13 @@ def main(
         m = LibraryModel.from_json_file(model)
     logger.info(f"Using %s: %s", model, m.description)
 
-    training_seqs = load_training_seqs(m, num_training_samples, threads, training_bam)
+    # training_seqs = load_training_seqs(m, num_training_samples, threads, training_bam)
 
-    logger.info("Loaded %d training sequences", len(training_seqs))
+    # logger.info("Loaded %d training sequences", len(training_seqs))
 
-    logger.info("Starting training...", len(training_seqs))
-    improvement, history = m.fit(
-        sequences=training_seqs,
+    # logger.info("Starting training...", len(training_seqs))
+    improvement, history = m.hmm.fit(
+        #sequences=training_seqs,
         max_iterations=max_training_iterations,
         stop_threshold=1e-1,
         return_history=True,
