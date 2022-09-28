@@ -6,7 +6,7 @@ nav_order: 10
 parent: Commands
 ---
 
-# Convert
+# Peek
 
 ## Description
 
